@@ -1,0 +1,46 @@
+name: Windows checks (everything without an API key)
+
+# Runs Aether's live Windows checks on a real Windows desktop: hotkey, apps and windows, files, notes,
+# computer facts, volume, the secret store, start at sign-in, memory and the CLI commands.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Source branch or tag"
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    if: github.repository_owner == 'vansh7266'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: vansh7266/Aether-V1.0
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./src
+      - name: Run the checks
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory out | Out-Null
+          python src\tests\live\win_checks.py "$PWD\out"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-checks
+          path: out
+      - name: Delete the source copy
+        if: always()
+        shell: bash
+        run: rm -rf src
