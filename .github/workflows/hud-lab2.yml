@@ -47,6 +47,8 @@ jobs:
               session_manager.transition_to(SessionState.ACTIVE, {"summoned": True})
               time.sleep(6)
               w = o.window
+              w.move(4, 4)  # over the light desktop wallpaper, to see whether its background is see-through
+              time.sleep(2)
               out["anchor"] = o._anchor; out["size_asked"] = o._size
               out["window"] = [w.x, w.y, w.width, w.height]
               out["page"] = w.evaluate_js("JSON.stringify({iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio, "
