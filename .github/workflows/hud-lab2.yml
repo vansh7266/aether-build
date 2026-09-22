@@ -1,0 +1,80 @@
+name: Windows HUD lab (source)
+
+# Runs Aether's real HUD code from the private source on GitHub's Windows machine, measures the window
+# and the page inside it, and screenshots. The source is deleted at the end.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Source branch or tag"
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  lab:
+    if: github.repository_owner == 'vansh7266'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: vansh7266/Aether-V1.0
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install --quiet ./src
+      - name: Run the HUD and measure
+        shell: pwsh
+        env:
+          PYWEBVIEW_LOG: debug
+        run: |
+          @'
+          import json, sys, threading, time
+          from aether.ui import overlay as ov
+          from aether.core.session import SessionState, session_manager
+          o = ov.DesktopOverlay(agent=None)
+          out = {}
+          def probe():
+              time.sleep(8)
+              session_manager.transition_to(SessionState.ACTIVE, {"summoned": True})
+              time.sleep(6)
+              w = o.window
+              out["anchor"] = o._anchor; out["size_asked"] = o._size
+              out["window"] = [w.x, w.y, w.width, w.height]
+              out["page"] = w.evaluate_js("JSON.stringify({iw: innerWidth, ih: innerHeight, dpr: devicePixelRatio, "
+                                          "hud: document.getElementById('hud').getBoundingClientRect(), "
+                                          "orb: document.querySelector('.orb').getBoundingClientRect()})")
+              out["screens"] = [[s.x, s.y, s.width, s.height] for s in ov.webview.screens]
+              print("MEASURE " + json.dumps(out, default=str), flush=True)
+              open("out/measure.json", "w").write(json.dumps(out, default=str, indent=1))
+          threading.Thread(target=probe, daemon=True).start()
+          o.run()
+          '@ | Set-Content lab.py
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          New-Item -ItemType Directory out | Out-Null
+          $p = Start-Process python -ArgumentList "lab.py" -PassThru -RedirectStandardOutput out\stdout.txt -RedirectStandardError out\stderr.txt
+          Start-Sleep 24
+          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+          $bmp.Save("$PWD\out\screen.png"); $g.Dispose(); $bmp.Dispose()
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-Content out\stdout.txt | Select-String MEASURE
+          Get-Content out\stderr.txt -Tail 25
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hud-lab2
+          path: out
+      - name: Delete the source copy
+        if: always()
+        shell: bash
+        run: rm -rf src
