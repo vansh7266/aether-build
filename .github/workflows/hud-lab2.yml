@@ -1,4 +1,4 @@
-name: Windows HUD lab (source)
+name: Windows HUD check (source)
 
 # Runs Aether's real HUD code from the private source on GitHub's Windows machine, measures the window
 # and the page inside it, and screenshots. The source is deleted at the end.
