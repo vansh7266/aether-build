@@ -1,0 +1,67 @@
+name: Windows HUD lab
+
+# Tries HUD window settings with the same pywebview on GitHub's Windows machine and screenshots each.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Build run whose Windows app provides the HUD files"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  lab:
+    if: github.repository_owner == 'vansh7266'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Get the HUD files and pywebview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download ${{ inputs.run_id }} -R ${{ github.repository }} -n aether-windows-x64 -D app
+          Expand-Archive (Get-ChildItem app\*.zip)[0].FullName -DestinationPath app
+          pip install --quiet pywebview==6.2.1
+      - name: Try each setting
+        shell: pwsh
+        run: |
+          @'
+          import sys, threading, time, webview
+          variant = sys.argv[1]
+          hud = r"app\aether\aether\ui\hud\index.html"
+          opts = dict(width=600, height=160, x=150, y=200, frameless=True, on_top=True, shadow=False,
+                      easy_drag=False, resizable=False, background_color="#000000")
+          if variant == "current":    opts.update(transparent=True, hidden=True)
+          if variant == "shown":      opts.update(transparent=True, hidden=False)
+          if variant == "opaque":     opts.update(transparent=False, hidden=True, background_color="#030305")
+          w = webview.create_window("Aether", url=hud, **opts)
+          def later():
+              time.sleep(3)
+              if opts.get("hidden"):
+                  w.show()
+          webview.start(later, private_mode=True)
+          '@ | Set-Content lab.py
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          New-Item -ItemType Directory out | Out-Null
+          foreach ($v in "current", "shown", "opaque") {
+            $p = Start-Process python -ArgumentList "lab.py", $v -PassThru -RedirectStandardError "out\$v-err.txt"
+            Start-Sleep 12
+            $bmp = New-Object System.Drawing.Bitmap 900, 500
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
+            $bmp.Save("$PWD\out\$v.png"); $g.Dispose(); $bmp.Dispose()
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep 2
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hud-lab
+          path: out
