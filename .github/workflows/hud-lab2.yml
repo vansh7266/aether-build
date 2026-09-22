@@ -60,6 +60,7 @@ jobs:
           '@ | Set-Content lab.py
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           New-Item -ItemType Directory out | Out-Null
+          (New-Object -ComObject Shell.Application).MinimizeAll(); Start-Sleep 2
           $p = Start-Process python -ArgumentList "lab.py" -PassThru -RedirectStandardOutput out\stdout.txt -RedirectStandardError out\stderr.txt
           Start-Sleep 24
           $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
