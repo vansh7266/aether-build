@@ -1,0 +1,121 @@
+name: Build Aether
+
+# Builds the compiled Aether app on GitHub's machines (free and unlimited in a public repository).
+# The source code is NOT in this repository: each build fetches it from the private repository with a
+# read-only key, compiles it, and deletes it. Only the built apps leave the machine (as build artifacts);
+# the owner's publish script puts them on the public downloads page.
+# Maintained in the private repository (packaging/templates/build-workflow.yml).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Version tag (or branch) of the source to build, e.g. v1.0.1"
+        required: true
+      only:
+        description: "Build just one: macos-arm64, macos-x64 or windows-x64 (empty = all)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.repository_owner == 'vansh7266'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        shell: python
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          import json, os
+          all_builds = [{"os": "macos-latest", "name": "macos-arm64"},      # Apple Silicon
+                        {"os": "macos-15-intel", "name": "macos-x64"},      # Intel Macs
+                        {"os": "windows-latest", "name": "windows-x64"}]
+          only = os.environ["ONLY"].strip()
+          chosen = [b for b in all_builds if not only or b["name"] == only]
+          if not chosen:
+              raise SystemExit(f"Unknown build {only!r}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("matrix=" + json.dumps({"include": chosen}) + "\n")
+
+  build:
+    needs: plan
+    timeout-minutes: 90   # a stuck step fails instead of holding a machine for 6 hours
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Fetch the source (private, read-only)
+        uses: actions/checkout@v4
+        with:
+          repository: vansh7266/Aether-V1.0
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Aether, its dependencies and the compiler
+        shell: bash
+        run: |
+          python -m pip install --quiet --upgrade pip
+          pip install --quiet .
+          pip install --quiet nuitka ordered-set zstandard pillow
+
+      - name: Run the test suite
+        shell: bash
+        run: python -m unittest discover -s tests -p "test_*.py" 2>&1 | tail -3; exit ${PIPESTATUS[0]}
+
+      - name: Unlock the signing certificate (macOS)
+        if: runner.os == 'macOS'
+        env:
+          AETHER_SIGNING_P12: ${{ secrets.AETHER_SIGNING_P12 }}
+          AETHER_SIGNING_PASSWORD: ${{ secrets.AETHER_SIGNING_PASSWORD }}
+        run: |
+          echo "$AETHER_SIGNING_P12" | base64 --decode > "$RUNNER_TEMP/aether.p12"
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(python -c "import secrets; print(secrets.token_hex(16))")
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/aether.p12" -k "$KEYCHAIN" -P "$AETHER_SIGNING_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm "$RUNNER_TEMP/aether.p12"
+          echo "AETHER_SIGN=Aether Code Signing" >> "$GITHUB_ENV"
+          echo "AETHER_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "AETHER_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build the app
+        shell: bash
+        run: python packaging/build.py ${AETHER_SIGN:+--sign "$AETHER_SIGN" --keychain "$AETHER_KEYCHAIN"}
+
+      - name: Check the built app runs
+        shell: bash
+        run: python packaging/smoke_test.py
+
+      - name: Install it with Scoop the way testers do, and run it (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python packaging/scoop_check.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aether-${{ matrix.name }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+      - name: Delete the source copy from the build machine
+        if: always()
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE" && find . -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+          echo "Source removed."
