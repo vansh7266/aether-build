@@ -1,0 +1,62 @@
+name: Windows HUD interaction check
+
+# Drives the real HUD on Windows the way a person does - click Text, type, drag - and records the
+# window, the page, screenshots and any page errors. Source is fetched read-only and deleted after.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Source branch or tag"
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository_owner == 'vansh7266'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: vansh7266/Aether-V1.0
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./src
+      - name: Use the HUD
+        shell: pwsh
+        env:
+          PYWEBVIEW_LOG: debug
+        run: |
+          Copy-Item src\tests\live\win_hud_probe.py .
+          New-Item -ItemType Directory out | Out-Null
+          (New-Object -ComObject Shell.Application).MinimizeAll(); Start-Sleep 2
+          $p = Start-Process python -ArgumentList "win_hud_probe.py", "$PWD\out" -PassThru -RedirectStandardOutput out\stdout.txt -RedirectStandardError out\stderr.txt
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          for ($i = 0; $i -lt 14; $i++) {
+            Start-Sleep 4
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+            $bmp.Save("$PWD\out\shot-$i.png"); $g.Dispose(); $bmp.Dispose()
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Copy-Item "$env:USERPROFILE\.aether\logs" out\aether-logs -Recurse -ErrorAction SilentlyContinue
+          Get-Content out\stdout.txt
+          Get-Content out\stderr.txt -Tail 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hud-probe-win
+          path: out
+      - name: Delete the source copy
+        if: always()
+        shell: bash
+        run: rm -rf src
