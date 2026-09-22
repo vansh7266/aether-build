@@ -35,6 +35,11 @@ jobs:
         run: |
           New-Item -ItemType Directory out | Out-Null
           python src\tests\live\win_checks.py "$PWD\out"
+      - name: Collect Aether's log
+        if: always()
+        shell: pwsh
+        run: Copy-Item "$env:USERPROFILE\.aether\logs" out\aether-logs -Recurse -ErrorAction SilentlyContinue
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
